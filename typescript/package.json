@@ -1,0 +1,32 @@
+{
+  "name": "rvc-mcp",
+  "version": "0.1.0",
+  "description": "RVC WebUI MCP Server — voice training, inference, separation, and model management via Gradio API (12 tools)",
+  "type": "module",
+  "bin": {
+    "rvc-mcp": "build/index.js"
+  },
+  "files": [
+    "build/index.js"
+  ],
+  "scripts": {
+    "build": "tsc && node esbuild.config.js",
+    "watch": "tsc --watch",
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js"
+  },
+  "author": "Purple Squirrel Media",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.8.0",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "esbuild": "^0.25.2",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

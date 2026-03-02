@@ -24,7 +24,7 @@ export async function gradioCall(
   config: RvcConfig,
   timeoutMs: number = 60_000
 ): Promise<unknown[]> {
-  const url = `${config.baseUrl}/call/${apiName}`;
+  const url = `${config.baseUrl}/gradio_api/call/${apiName}`;
 
   // Phase 1: POST to initiate
   const postRes = await fetch(url, {
@@ -53,7 +53,7 @@ export async function gradioCallStreaming(
   config: RvcConfig,
   timeoutMs: number = 600_000
 ): Promise<unknown[]> {
-  const url = `${config.baseUrl}/call/${apiName}`;
+  const url = `${config.baseUrl}/gradio_api/call/${apiName}`;
 
   const postRes = await fetch(url, {
     method: "POST",

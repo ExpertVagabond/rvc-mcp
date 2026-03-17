@@ -1,10 +1,16 @@
 #![recursion_limit = "512"]
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::BufRead;
 
 #[derive(Deserialize)]
-struct JsonRpcRequest { #[allow(dead_code)] jsonrpc: String, id: Option<Value>, method: String, params: Option<Value> }
+struct JsonRpcRequest {
+    #[allow(dead_code)]
+    jsonrpc: String,
+    id: Option<Value>,
+    method: String,
+    params: Option<Value>,
+}
 
 struct Config {
     base_url: String,
@@ -17,14 +23,21 @@ struct Config {
 impl Config {
     fn from_env() -> Self {
         let base_url = std::env::var("RVC_URL").unwrap_or_else(|_| "http://localhost:7865".into());
-        let rvc_dir = std::env::var("RVC_DIR").unwrap_or_else(|_| "/Volumes/Virtual Server/projects/ai-music-rvc".into());
+        let rvc_dir = std::env::var("RVC_DIR")
+            .unwrap_or_else(|_| "/Volumes/Virtual Server/projects/ai-music-rvc".into());
         let output_dir = std::env::var("RVC_OUTPUT_DIR").unwrap_or_else(|_| {
             let home = std::env::var("HOME").unwrap_or_default();
             format!("{}/Desktop/AI-Music", home)
         });
         let weights_dir = format!("{}/assets/weights", rvc_dir);
         let logs_dir = format!("{}/logs", rvc_dir);
-        Self { base_url, rvc_dir, output_dir, weights_dir, logs_dir }
+        Self {
+            base_url,
+            rvc_dir,
+            output_dir,
+            weights_dir,
+            logs_dir,
+        }
     }
 }
 
@@ -180,37 +193,56 @@ struct GradioClient {
 
 impl GradioClient {
     fn new(base_url: &str) -> Self {
-        Self { client: reqwest::Client::new(), base_url: base_url.to_string() }
+        Self {
+            client: reqwest::Client::new(),
+            base_url: base_url.to_string(),
+        }
     }
 
     async fn health_check(&self) -> bool {
-        self.client.get(&self.base_url).timeout(std::time::Duration::from_secs(5))
-            .send().await.map(|r| r.status().is_success()).unwrap_or(false)
+        self.client
+            .get(&self.base_url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
     }
 
     async fn call(&self, api_name: &str, data: &Value) -> Result<Value, String> {
         let url = format!("{}/gradio_api/call/{}", self.base_url, api_name);
-        let post_res = self.client.post(&url)
+        let post_res = self
+            .client
+            .post(&url)
             .json(&json!({"data": data}))
             .timeout(std::time::Duration::from_secs(30))
-            .send().await.map_err(|e| format!("Gradio POST failed: {e}"))?;
+            .send()
+            .await
+            .map_err(|e| format!("Gradio POST failed: {e}"))?;
         if !post_res.status().is_success() {
             let body = post_res.text().await.unwrap_or_default();
             return Err(format!("Gradio POST {api_name}: {body}"));
         }
-        let resp: Value = post_res.json().await.map_err(|e| format!("Gradio response parse: {e}"))?;
+        let resp: Value = post_res
+            .json()
+            .await
+            .map_err(|e| format!("Gradio response parse: {e}"))?;
         let event_id = resp["event_id"].as_str().ok_or("No event_id")?;
 
         let sse_url = format!("{}/{}", url, event_id);
-        let sse_res = self.client.get(&sse_url)
+        let sse_res = self
+            .client
+            .get(&sse_url)
             .timeout(std::time::Duration::from_secs(600))
-            .send().await.map_err(|e| format!("Gradio SSE failed: {e}"))?;
+            .send()
+            .await
+            .map_err(|e| format!("Gradio SSE failed: {e}"))?;
         let body = sse_res.text().await.map_err(|e| format!("SSE read: {e}"))?;
         for line in body.lines() {
-            if let Some(data_str) = line.strip_prefix("data: ") {
-                if let Ok(v) = serde_json::from_str::<Value>(data_str) {
-                    return Ok(v);
-                }
+            if let Some(data_str) = line.strip_prefix("data: ")
+                && let Ok(v) = serde_json::from_str::<Value>(data_str)
+            {
+                return Ok(v);
             }
         }
         Err(format!("No complete event from Gradio for {api_name}"))
@@ -225,7 +257,10 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
             if up {
                 format!("RVC WebUI is running at {}", config.base_url)
             } else {
-                format!("RVC WebUI is NOT running at {}\n\nStart it with:\n  cd \"{}\" && source .venv/bin/activate && python web.py --pycmd python --noautoopen", config.base_url, config.rvc_dir)
+                format!(
+                    "RVC WebUI is NOT running at {}\n\nStart it with:\n  cd \"{}\" && source .venv/bin/activate && python web.py --pycmd python --noautoopen",
+                    config.base_url, config.rvc_dir
+                )
             }
         }
         "rvc_clean" => {
@@ -237,31 +272,45 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
                     cleaned.push(p);
                 }
             }
-            if cleaned.is_empty() { "No temporary files to clean".into() } else { format!("Cleaned: {}", cleaned.join(", ")) }
-        }
-        "rvc_list_models" => {
-            match std::fs::read_dir(&config.weights_dir) {
-                Ok(entries) => {
-                    let models: Vec<String> = entries.filter_map(|e| {
-                        let e = e.ok()?;
-                        let name = e.file_name().to_string_lossy().to_string();
-                        if name.ends_with(".pth") { Some(name) } else { None }
-                    }).collect();
-                    if models.is_empty() { format!("No models found in {}", config.weights_dir) }
-                    else { format!("Models ({}):\n{}", models.len(), models.join("\n")) }
-                }
-                Err(e) => format!("Cannot read weights dir {}: {e}", config.weights_dir),
+            if cleaned.is_empty() {
+                "No temporary files to clean".into()
+            } else {
+                format!("Cleaned: {}", cleaned.join(", "))
             }
         }
+        "rvc_list_models" => match std::fs::read_dir(&config.weights_dir) {
+            Ok(entries) => {
+                let models: Vec<String> = entries
+                    .filter_map(|e| {
+                        let e = e.ok()?;
+                        let name = e.file_name().to_string_lossy().to_string();
+                        if name.ends_with(".pth") {
+                            Some(name)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if models.is_empty() {
+                    format!("No models found in {}", config.weights_dir)
+                } else {
+                    format!("Models ({}):\n{}", models.len(), models.join("\n"))
+                }
+            }
+            Err(e) => format!("Cannot read weights dir {}: {e}", config.weights_dir),
+        },
         "rvc_model_info" => {
             let model_name = args["model_name"].as_str().unwrap_or("");
             let path = format!("{}/{}", config.weights_dir, model_name);
             match std::fs::metadata(&path) {
                 Ok(m) => {
                     let size_mb = m.len() as f64 / 1_048_576.0;
-                    let index_glob = format!("{}/{}",config.logs_dir, model_name.replace(".pth",""));
+                    let index_glob =
+                        format!("{}/{}", config.logs_dir, model_name.replace(".pth", ""));
                     let has_index = std::path::Path::new(&index_glob).exists();
-                    format!("Model: {model_name}\nSize: {size_mb:.1} MB\nIndex dir exists: {has_index}")
+                    format!(
+                        "Model: {model_name}\nSize: {size_mb:.1} MB\nIndex dir exists: {has_index}"
+                    )
                 }
                 Err(_) => format!("Model not found: {path}"),
             }
@@ -273,28 +322,54 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
                 let api = match name {
                     "rvc_model_extract" => {
                         let sr = args["sample_rate"].as_str().unwrap_or("40k");
-                        let pg = if args["pitch_guidance"].as_bool().unwrap_or(true) { 1 } else { 0 };
-                        gradio.call("extract_small_model", &json!([
-                            args["model_path"].as_str().unwrap_or(""), args["output_name"].as_str().unwrap_or(""),
-                            sr, pg
-                        ])).await
+                        let pg = if args["pitch_guidance"].as_bool().unwrap_or(true) {
+                            1
+                        } else {
+                            0
+                        };
+                        gradio
+                            .call(
+                                "extract_small_model",
+                                &json!([
+                                    args["model_path"].as_str().unwrap_or(""),
+                                    args["output_name"].as_str().unwrap_or(""),
+                                    sr,
+                                    pg
+                                ]),
+                            )
+                            .await
                     }
                     "rvc_model_merge" => {
                         let ratio = args["ratio"].as_f64().unwrap_or(0.5);
-                        gradio.call("merge", &json!([
-                            args["model_a"].as_str().unwrap_or(""), args["model_b"].as_str().unwrap_or(""),
-                            ratio, args["output_name"].as_str().unwrap_or("")
-                        ])).await
+                        gradio
+                            .call(
+                                "merge",
+                                &json!([
+                                    args["model_a"].as_str().unwrap_or(""),
+                                    args["model_b"].as_str().unwrap_or(""),
+                                    ratio,
+                                    args["output_name"].as_str().unwrap_or("")
+                                ]),
+                            )
+                            .await
                     }
                     "rvc_export_onnx" => {
-                        gradio.call("export_onnx", &json!([
-                            args["model_path"].as_str().unwrap_or(""), args["output_path"].as_str().unwrap_or("")
-                        ])).await
+                        gradio
+                            .call(
+                                "export_onnx",
+                                &json!([
+                                    args["model_path"].as_str().unwrap_or(""),
+                                    args["output_path"].as_str().unwrap_or("")
+                                ]),
+                            )
+                            .await
                     }
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 };
                 match api {
-                    Ok(v) => format!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
+                    Ok(v) => serde_json::to_string_pretty(&v)
+                        .unwrap_or_default()
+                        .to_string(),
                     Err(e) => format!("Error: {e}"),
                 }
             }
@@ -315,10 +390,12 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
             let protect = args["protect"].as_f64().unwrap_or(0.33);
 
             // Load model
-            let _ = gradio.call("infer_change_voice", &json!([model, protect, protect])).await;
+            let _ = gradio
+                .call("infer_change_voice", &json!([model, protect, protect]))
+                .await;
             // Run inference
             match gradio.call("infer_convert", &json!([0, {"path": input}, pitch, null, f0, null, idx_path, idx_rate, filt, resample, rms, protect])).await {
-                Ok(v) => format!("{}", serde_json::to_string_pretty(&json!({"status":"success","model":model,"input":input,"result":v})).unwrap_or_default()),
+                Ok(v) => serde_json::to_string_pretty(&json!({"status":"success","model":model,"input":input,"result":v})).unwrap_or_default().to_string(),
                 Err(e) => format!("Inference error: {e}"),
             }
         }
@@ -329,7 +406,11 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
             let input = args["input_audio"].as_str().unwrap_or("");
             let model = args["model"].as_str().unwrap_or("HP5_only_main_vocal");
             match gradio.call("uvr", &json!([model, {"path": input}])).await {
-                Ok(v) => format!("{}", serde_json::to_string_pretty(&json!({"status":"success","input":input,"result":v})).unwrap_or_default()),
+                Ok(v) => serde_json::to_string_pretty(
+                    &json!({"status":"success","input":input,"result":v}),
+                )
+                .unwrap_or_default()
+                .to_string(),
                 Err(e) => format!("Separation error: {e}"),
             }
         }
@@ -340,8 +421,15 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
             let exp = args["experiment_name"].as_str().unwrap_or("");
             let dataset = args["dataset_path"].as_str().unwrap_or("");
             let sr = args["sample_rate"].as_str().unwrap_or("40k");
-            match gradio.call("preprocess_dataset", &json!([exp, dataset, sr, 1])).await {
-                Ok(v) => format!("{}", serde_json::to_string_pretty(&json!({"status":"success","experiment":exp,"result":v})).unwrap_or_default()),
+            match gradio
+                .call("preprocess_dataset", &json!([exp, dataset, sr, 1]))
+                .await
+            {
+                Ok(v) => serde_json::to_string_pretty(
+                    &json!({"status":"success","experiment":exp,"result":v}),
+                )
+                .unwrap_or_default()
+                .to_string(),
                 Err(e) => format!("Preprocess error: {e}"),
             }
         }
@@ -352,8 +440,15 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
             let exp = args["experiment_name"].as_str().unwrap_or("");
             let f0 = args["f0_method"].as_str().unwrap_or("rmvpe");
             let ver = args["version"].as_str().unwrap_or("v2");
-            match gradio.call("extract_f0_feature", &json!([exp, f0, ver])).await {
-                Ok(v) => format!("{}", serde_json::to_string_pretty(&json!({"status":"success","experiment":exp,"result":v})).unwrap_or_default()),
+            match gradio
+                .call("extract_f0_feature", &json!([exp, f0, ver]))
+                .await
+            {
+                Ok(v) => serde_json::to_string_pretty(
+                    &json!({"status":"success","experiment":exp,"result":v}),
+                )
+                .unwrap_or_default()
+                .to_string(),
                 Err(e) => format!("Extract error: {e}"),
             }
         }
@@ -367,8 +462,20 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
             let save_freq = args["save_frequency"].as_i64().unwrap_or(25);
             let sr = args["sample_rate"].as_str().unwrap_or("40k");
             let ver = args["version"].as_str().unwrap_or("v2");
-            match gradio.call("click_train", &json!([exp, sr, true, epochs, save_freq, batch, true, "no", ver, "v2"])).await {
-                Ok(v) => format!("{}", serde_json::to_string_pretty(&json!({"status":"success","experiment":exp,"epochs":epochs,"result":v})).unwrap_or_default()),
+            match gradio
+                .call(
+                    "click_train",
+                    &json!([
+                        exp, sr, true, epochs, save_freq, batch, true, "no", ver, "v2"
+                    ]),
+                )
+                .await
+            {
+                Ok(v) => serde_json::to_string_pretty(
+                    &json!({"status":"success","experiment":exp,"epochs":epochs,"result":v}),
+                )
+                .unwrap_or_default()
+                .to_string(),
                 Err(e) => format!("Training error: {e}"),
             }
         }
@@ -379,24 +486,38 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_env_filter("info").with_writer(std::io::stderr).init();
+    tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .with_writer(std::io::stderr)
+        .init();
     let config = Config::from_env();
-    eprintln!("[rvc-mcp] Starting with 12 tools, WebUI: {}, Dir: {}", config.base_url, config.rvc_dir);
+    eprintln!(
+        "[rvc-mcp] Starting with 12 tools, WebUI: {}, Dir: {}",
+        config.base_url, config.rvc_dir
+    );
     let stdin = std::io::stdin();
     let mut line = String::new();
     loop {
         line.clear();
-        if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 { break; }
+        if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         let req: JsonRpcRequest = match serde_json::from_str(trimmed) {
             Ok(r) => r,
             Err(_) => continue,
         };
         let resp = match req.method.as_str() {
-            "initialize" => json!({"jsonrpc":"2.0","id":req.id,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"rvc-mcp","version":"0.1.0"}}}),
+            "initialize" => {
+                json!({"jsonrpc":"2.0","id":req.id,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"rvc-mcp","version":"0.1.0"}}})
+            }
             "notifications/initialized" => continue,
-            "tools/list" => json!({"jsonrpc":"2.0","id":req.id,"result":{"tools":tool_definitions()}}),
+            "tools/list" => {
+                json!({"jsonrpc":"2.0","id":req.id,"result":{"tools":tool_definitions()}})
+            }
             "tools/call" => {
                 let params = req.params.unwrap_or(json!({}));
                 let name = params["name"].as_str().unwrap_or("");
@@ -404,7 +525,9 @@ async fn main() {
                 let result = call_tool(name, &args, &config).await;
                 json!({"jsonrpc":"2.0","id":req.id,"result":result})
             }
-            _ => json!({"jsonrpc":"2.0","id":req.id,"error":{"code":-32601,"message":"Method not found"}}),
+            _ => {
+                json!({"jsonrpc":"2.0","id":req.id,"error":{"code":-32601,"message":"Method not found"}})
+            }
         };
         println!("{}", serde_json::to_string(&resp).unwrap());
     }

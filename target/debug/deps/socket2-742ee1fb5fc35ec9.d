@@ -1,9 +1,0 @@
-/Volumes/Virtual Server/projects/rvc-mcp/target/debug/deps/socket2-742ee1fb5fc35ec9.d: /Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/lib.rs /Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/sockaddr.rs /Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/socket.rs /Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/sockref.rs /Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/sys/unix.rs
-
-/Volumes/Virtual Server/projects/rvc-mcp/target/debug/deps/libsocket2-742ee1fb5fc35ec9.rmeta: /Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/lib.rs /Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/sockaddr.rs /Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/socket.rs /Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/sockref.rs /Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/sys/unix.rs
-
-/Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/lib.rs:
-/Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/sockaddr.rs:
-/Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/socket.rs:
-/Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/sockref.rs:
-/Volumes/Virtual\ Server/configs/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.6.2/src/sys/unix.rs:

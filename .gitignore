@@ -3,3 +3,6 @@ typescript/build/
 typescript/node_modules/
 .DS_Store
 *.env
+
+# Rust build artifacts
+target/

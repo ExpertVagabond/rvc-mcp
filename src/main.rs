@@ -21,7 +21,7 @@ struct Config {
 }
 
 impl Config {
-    fn from_env() -> Self {
+    fn from_env() -> Result<Self, String> {
         let base_url = std::env::var("RVC_URL").unwrap_or_else(|_| "http://localhost:7865".into());
         let rvc_dir = std::env::var("RVC_DIR")
             .unwrap_or_else(|_| "/Volumes/Virtual Server/projects/ai-music-rvc".into());
@@ -29,15 +29,37 @@ impl Config {
             let home = std::env::var("HOME").unwrap_or_default();
             format!("{}/Desktop/AI-Music", home)
         });
+
+        // Validate base_url format
+        if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+            return Err(format!(
+                "RVC_URL must start with http:// or https://, got: {}",
+                base_url
+            ));
+        }
+
+        // Validate rvc_dir exists
+        if !std::path::Path::new(&rvc_dir).is_dir() {
+            eprintln!(
+                "[rvc-mcp] Warning: RVC_DIR does not exist: {}",
+                rvc_dir
+            );
+        }
+
+        // Validate output_dir is non-empty
+        if output_dir.is_empty() {
+            return Err("RVC_OUTPUT_DIR must not be empty".into());
+        }
+
         let weights_dir = format!("{}/assets/weights", rvc_dir);
         let logs_dir = format!("{}/logs", rvc_dir);
-        Self {
+        Ok(Self {
             base_url,
             rvc_dir,
             output_dir,
             weights_dir,
             logs_dir,
-        }
+        })
     }
 }
 
@@ -143,15 +165,16 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "rvc_preprocess",
-            "description": "Preprocess a dataset for RVC training (slice audio, resample)",
+            "description": "Preprocess training audio: slice into segments, normalize volume, resample. First step of the RVC training pipeline.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "experiment_name": { "type": "string", "description": "Name for the training experiment" },
-                    "dataset_path": { "type": "string", "description": "Path to folder with training audio files" },
-                    "sample_rate": { "type": "string", "description": "Target sample rate: 32k, 40k, 48k", "default": "40k" }
+                    "training_folder": { "type": "string", "description": "Path to folder containing training audio files (WAV/MP3/FLAC)" },
+                    "experiment_name": { "type": "string", "description": "Name for this training experiment (used as folder name in logs/)" },
+                    "sample_rate": { "type": "string", "description": "Target sample rate: 32k, 40k, 48k", "default": "48k" },
+                    "cpu_processes": { "type": "integer", "description": "Number of CPU processes for parallel slicing (1-16)", "default": 4, "minimum": 1, "maximum": 16 }
                 },
-                "required": ["experiment_name", "dataset_path"]
+                "required": ["training_folder", "experiment_name"]
             }
         },
         {
@@ -218,16 +241,21 @@ impl GradioClient {
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
-            .map_err(|e| format!("Gradio POST failed: {e}"))?;
+            .map_err(|e| {
+                eprintln!("[rvc-mcp] Gradio POST error: {e}");
+                Self::redact_connection_error(&e)
+            })?;
         if !post_res.status().is_success() {
-            let body = post_res.text().await.unwrap_or_default();
-            return Err(format!("Gradio POST {api_name}: {body}"));
+            let status = post_res.status();
+            let _body = post_res.text().await.unwrap_or_default();
+            eprintln!("[rvc-mcp] Gradio POST {api_name} failed: {status} {_body}");
+            return Err(format!("Gradio call to {api_name} failed (HTTP {status})"));
         }
         let resp: Value = post_res
             .json()
             .await
-            .map_err(|e| format!("Gradio response parse: {e}"))?;
-        let event_id = resp["event_id"].as_str().ok_or("No event_id")?;
+            .map_err(|_| "Failed to parse Gradio response".to_string())?;
+        let event_id = resp["event_id"].as_str().ok_or("No event_id in response")?;
 
         let sse_url = format!("{}/{}", url, event_id);
         let sse_res = self
@@ -236,8 +264,11 @@ impl GradioClient {
             .timeout(std::time::Duration::from_secs(600))
             .send()
             .await
-            .map_err(|e| format!("Gradio SSE failed: {e}"))?;
-        let body = sse_res.text().await.map_err(|e| format!("SSE read: {e}"))?;
+            .map_err(|e| {
+                eprintln!("[rvc-mcp] Gradio SSE error: {e}");
+                Self::redact_connection_error(&e)
+            })?;
+        let body = sse_res.text().await.map_err(|_| "Failed to read SSE stream".to_string())?;
         for line in body.lines() {
             if let Some(data_str) = line.strip_prefix("data: ")
                 && let Ok(v) = serde_json::from_str::<Value>(data_str)
@@ -246,6 +277,16 @@ impl GradioClient {
             }
         }
         Err(format!("No complete event from Gradio for {api_name}"))
+    }
+
+    fn redact_connection_error(e: &reqwest::Error) -> String {
+        if e.is_connect() {
+            "Service unavailable: cannot connect to RVC WebUI".to_string()
+        } else if e.is_timeout() {
+            "Service unavailable: request timed out".to_string()
+        } else {
+            "Service unavailable".to_string()
+        }
     }
 }
 
@@ -418,15 +459,19 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
             if !gradio.health_check().await {
                 return json!({"content":[{"type":"text","text":format!("RVC WebUI not running at {}", config.base_url)}],"isError":true});
             }
+            let folder = args["training_folder"].as_str().unwrap_or("");
             let exp = args["experiment_name"].as_str().unwrap_or("");
-            let dataset = args["dataset_path"].as_str().unwrap_or("");
-            let sr = args["sample_rate"].as_str().unwrap_or("40k");
+            let sr = args["sample_rate"].as_str().unwrap_or("48k");
+            let cpu = args["cpu_processes"].as_i64().unwrap_or(4).clamp(1, 16);
+            if folder.is_empty() || exp.is_empty() {
+                return json!({"content":[{"type":"text","text":"Missing required: training_folder and experiment_name"}],"isError":true});
+            }
             match gradio
-                .call("preprocess_dataset", &json!([exp, dataset, sr, 1]))
+                .call("train_preprocess", &json!([folder, exp, sr, cpu]))
                 .await
             {
                 Ok(v) => serde_json::to_string_pretty(
-                    &json!({"status":"success","experiment":exp,"result":v}),
+                    &json!({"status":"success","experiment":exp,"training_folder":folder,"result":v}),
                 )
                 .unwrap_or_default()
                 .to_string(),
@@ -484,23 +529,54 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
     json!({"content":[{"type":"text","text":text}]})
 }
 
+/// Valid tool names for allowlist validation
+const VALID_TOOLS: &[&str] = &[
+    "rvc_status",
+    "rvc_clean",
+    "rvc_list_models",
+    "rvc_model_info",
+    "rvc_model_extract",
+    "rvc_model_merge",
+    "rvc_export_onnx",
+    "rvc_infer",
+    "rvc_separate_vocals",
+    "rvc_preprocess",
+    "rvc_extract_features",
+    "rvc_train",
+];
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter("info")
         .with_writer(std::io::stderr)
         .init();
-    let config = Config::from_env();
+
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[rvc-mcp] Configuration error: {e}");
+            std::process::exit(1);
+        }
+    };
+
     eprintln!(
-        "[rvc-mcp] Starting with 12 tools, WebUI: {}, Dir: {}",
-        config.base_url, config.rvc_dir
+        "[rvc-mcp] Starting with {} tools, WebUI: {}",
+        VALID_TOOLS.len(),
+        config.base_url
     );
+
     let stdin = std::io::stdin();
     let mut line = String::new();
     loop {
         line.clear();
-        if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
-            break;
+        match stdin.lock().read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("[rvc-mcp] stdin read error: {e}");
+                break;
+            }
         }
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -521,14 +597,22 @@ async fn main() {
             "tools/call" => {
                 let params = req.params.unwrap_or(json!({}));
                 let name = params["name"].as_str().unwrap_or("");
-                let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                let result = call_tool(name, &args, &config).await;
-                json!({"jsonrpc":"2.0","id":req.id,"result":result})
+                // Validate tool name against allowlist
+                if !VALID_TOOLS.contains(&name) {
+                    json!({"jsonrpc":"2.0","id":req.id,"result":{"content":[{"type":"text","text":format!("Unknown tool: {name}")}],"isError":true}})
+                } else {
+                    let args = params.get("arguments").cloned().unwrap_or(json!({}));
+                    let result = call_tool(name, &args, &config).await;
+                    json!({"jsonrpc":"2.0","id":req.id,"result":result})
+                }
             }
             _ => {
                 json!({"jsonrpc":"2.0","id":req.id,"error":{"code":-32601,"message":"Method not found"}})
             }
         };
-        println!("{}", serde_json::to_string(&resp).unwrap());
+        match serde_json::to_string(&resp) {
+            Ok(s) => println!("{s}"),
+            Err(e) => eprintln!("[rvc-mcp] Failed to serialize response: {e}"),
+        }
     }
 }

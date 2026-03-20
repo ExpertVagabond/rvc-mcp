@@ -7,6 +7,39 @@ export class GradioError extends Error {
   }
 }
 
+/** Redact server internals from error messages returned to callers */
+function redactError(detail: string): string {
+  // Strip absolute paths, stack traces, and server config from messages
+  return detail
+    .replace(/\/[\w/.:-]+/g, "[path]")
+    .replace(/\b\d{1,3}(\.\d{1,3}){3}(:\d+)?\b/g, "[host]")
+    .replace(/at\s+.+\(.+\)/g, "")
+    .replace(/\n\s*at\s+.+/g, "")
+    .slice(0, 200);
+}
+
+/** Validate that POST data is an array of expected types */
+function validatePostData(data: unknown[]): void {
+  if (!Array.isArray(data)) {
+    throw new GradioError("POST data must be an array");
+  }
+  for (let i = 0; i < data.length; i++) {
+    const item = data[i];
+    const t = typeof item;
+    if (
+      item !== null &&
+      t !== "string" &&
+      t !== "number" &&
+      t !== "boolean" &&
+      t !== "object"
+    ) {
+      throw new GradioError(
+        `Invalid data type at index ${i}: expected string|number|boolean|object|null, got ${t}`
+      );
+    }
+  }
+}
+
 export async function gradioHealthCheck(config: RvcConfig): Promise<boolean> {
   try {
     const res = await fetch(config.baseUrl, {
@@ -24,20 +57,29 @@ export async function gradioCall(
   config: RvcConfig,
   timeoutMs: number = 60_000
 ): Promise<unknown[]> {
+  validatePostData(data);
   const url = `${config.baseUrl}/gradio_api/call/${apiName}`;
 
-  // Phase 1: POST to initiate
-  const postRes = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ data }),
-    signal: AbortSignal.timeout(30_000),
-  });
+  let postRes: Response;
+  try {
+    // Phase 1: POST to initiate
+    postRes = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data }),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (e) {
+    throw classifyFetchError(e, apiName);
+  }
 
   if (!postRes.ok) {
     const body = await postRes.text().catch(() => "");
+    process.stderr.write(
+      `[rvc-mcp] Gradio POST /call/${apiName} failed: ${postRes.status} ${body}\n`
+    );
     throw new GradioError(
-      `POST /call/${apiName} failed: ${postRes.status} ${postRes.statusText} ${body}`
+      `Gradio call to ${apiName} failed (HTTP ${postRes.status})`
     );
   }
 
@@ -53,19 +95,28 @@ export async function gradioCallStreaming(
   config: RvcConfig,
   timeoutMs: number = 600_000
 ): Promise<unknown[]> {
+  validatePostData(data);
   const url = `${config.baseUrl}/gradio_api/call/${apiName}`;
 
-  const postRes = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ data }),
-    signal: AbortSignal.timeout(30_000),
-  });
+  let postRes: Response;
+  try {
+    postRes = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data }),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (e) {
+    throw classifyFetchError(e, apiName);
+  }
 
   if (!postRes.ok) {
     const body = await postRes.text().catch(() => "");
+    process.stderr.write(
+      `[rvc-mcp] Gradio POST /call/${apiName} failed: ${postRes.status} ${body}\n`
+    );
     throw new GradioError(
-      `POST /call/${apiName} failed: ${postRes.status} ${postRes.statusText} ${body}`
+      `Gradio call to ${apiName} failed (HTTP ${postRes.status})`
     );
   }
 
@@ -85,11 +136,16 @@ async function readSSE(
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const sseRes = await fetch(sseUrl, { signal: controller.signal });
+    let sseRes: Response;
+    try {
+      sseRes = await fetch(sseUrl, { signal: controller.signal });
+    } catch (e) {
+      throw classifyFetchError(e, apiName);
+    }
 
     if (!sseRes.ok || !sseRes.body) {
       throw new GradioError(
-        `SSE GET /call/${apiName}/${eventId} failed: ${sseRes.status}`
+        `SSE stream for ${apiName} failed (HTTP ${sseRes.status})`
       );
     }
 
@@ -115,8 +171,12 @@ async function readSSE(
           if (currentEvent === "complete") {
             return JSON.parse(dataStr) as unknown[];
           } else if (currentEvent === "error") {
+            // Log full error to stderr, return redacted message to caller
+            process.stderr.write(
+              `[rvc-mcp] Gradio error on ${apiName}: ${dataStr}\n`
+            );
             throw new GradioError(
-              `Gradio error on ${apiName}: ${dataStr}`
+              `Gradio processing error on ${apiName}: ${redactError(dataStr)}`
             );
           } else if (currentEvent === "generating") {
             lastData = JSON.parse(dataStr) as unknown[];
@@ -137,9 +197,48 @@ async function readSSE(
   }
 }
 
+/** Classify a fetch error into a typed GradioError with connection-specific messaging */
+function classifyFetchError(e: unknown, apiName: string): GradioError {
+  const msg = e instanceof Error ? e.message : String(e);
+  const cause = (e as NodeJS.ErrnoException)?.cause as
+    | { code?: string }
+    | undefined;
+  const code = cause?.code ?? "";
+
+  // Log full details to stderr for debugging
+  process.stderr.write(`[rvc-mcp] Fetch error on ${apiName}: ${msg}\n`);
+
+  if (code === "ECONNREFUSED" || msg.includes("ECONNREFUSED")) {
+    return new GradioError("Service unavailable: connection refused");
+  }
+  if (code === "ETIMEDOUT" || msg.includes("ETIMEDOUT")) {
+    return new GradioError("Service unavailable: connection timed out");
+  }
+  if (code === "ENOTFOUND" || msg.includes("ENOTFOUND")) {
+    return new GradioError("Service unavailable: host not found");
+  }
+  if (e instanceof TypeError && msg.includes("fetch failed")) {
+    return new GradioError("Service unavailable: cannot reach RVC WebUI");
+  }
+  if (
+    e instanceof Error &&
+    (e.name === "AbortError" || msg.includes("aborted"))
+  ) {
+    return new GradioError("Service unavailable: request timed out");
+  }
+  return new GradioError("Service unavailable");
+}
+
 export function isConnectionError(e: unknown): boolean {
   if (e instanceof TypeError && String(e).includes("fetch failed")) return true;
   if (e instanceof Error && e.message.includes("ECONNREFUSED")) return true;
+  if (e instanceof Error && e.message.includes("ETIMEDOUT")) return true;
+  if (e instanceof Error && e.message.includes("ENOTFOUND")) return true;
+  if (
+    e instanceof Error &&
+    e.message.startsWith("Service unavailable")
+  )
+    return true;
   if (
     e instanceof Error &&
     (e.name === "AbortError" || e.message.includes("aborted"))

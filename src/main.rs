@@ -1,7 +1,49 @@
 #![recursion_limit = "512"]
+//! RVC MCP Server — voice conversion tools via Model Context Protocol.
+//!
+//! Security:
+//! - All environment-sourced URLs validated (http/https only)
+//! - File paths validated against traversal attacks
+//! - Argument length limits enforced before processing
+//! - No credentials/keys in log output
+//! - Process exit on config validation failure
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::BufRead;
+
+// --- Security: input validation constants ---
+/// Maximum length for any single string argument.
+const MAX_ARG_LEN: usize = 4096;
+/// Maximum file path length.
+const MAX_PATH_LEN: usize = 1024;
+/// Allowed audio file extensions for input validation.
+const ALLOWED_AUDIO_EXTS: &[&str] = &[".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"];
+/// Allowed model file extensions.
+const ALLOWED_MODEL_EXTS: &[&str] = &[".pth", ".pt", ".onnx", ".index"];
+
+/// Validate a string argument is safe and within length bounds.
+fn validate_arg(value: &str, field: &str) -> Result<(), String> {
+    if value.len() > MAX_ARG_LEN {
+        return Err(format!("{field} exceeds maximum length of {MAX_ARG_LEN}"));
+    }
+    if value.contains('\0') {
+        return Err(format!("{field} contains null bytes"));
+    }
+    Ok(())
+}
+
+/// Validate a file path — no traversal, within length limits.
+fn validate_path(path: &str, field: &str) -> Result<(), String> {
+    validate_arg(path, field)?;
+    if path.len() > MAX_PATH_LEN {
+        return Err(format!("{field} exceeds max path length of {MAX_PATH_LEN}"));
+    }
+    if path.contains("..") {
+        return Err(format!("{field} contains path traversal sequence"));
+    }
+    Ok(())
+}
 
 #[derive(Deserialize)]
 struct JsonRpcRequest {

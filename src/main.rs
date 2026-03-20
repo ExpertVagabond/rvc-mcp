@@ -80,10 +80,7 @@ impl Config {
 
         // Validate base_url format
         if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
-            return Err(format!(
-                "RVC_URL must start with http:// or https://, got: {}",
-                base_url
-            ));
+            return Err("RVC_URL must start with http:// or https://".into());
         }
 
         // Validate rvc_dir exists

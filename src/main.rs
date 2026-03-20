@@ -45,6 +45,12 @@ fn validate_path(path: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Sanitize error output for external consumption — strip internal details.
+fn sanitize_error(msg: &str) -> String {
+    let first_line = msg.lines().next().unwrap_or("Internal error");
+    first_line.chars().take(300).collect()
+}
+
 #[derive(Deserialize)]
 struct JsonRpcRequest {
     #[allow(dead_code)]

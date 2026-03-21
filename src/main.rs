@@ -467,7 +467,13 @@ async fn call_tool(name: &str, args: &Value, config: &Config) -> Value {
                 return json!({"content":[{"type":"text","text":format!("RVC WebUI not running at {}", config.base_url)}],"isError":true});
             }
             let model = args["model_name"].as_str().unwrap_or("");
+            if let Err(e) = validate_arg(model, "model_name") {
+                return json!({"content":[{"type":"text","text":sanitize_error(&e)}],"isError":true});
+            }
             let input = args["input_audio"].as_str().unwrap_or("");
+            if let Err(e) = validate_path(input, "input_audio") {
+                return json!({"content":[{"type":"text","text":sanitize_error(&e)}],"isError":true});
+            }
             let pitch = args["pitch"].as_i64().unwrap_or(0);
             let f0 = args["f0_method"].as_str().unwrap_or("rmvpe");
             let idx_path = args["index_path"].as_str().unwrap_or("");

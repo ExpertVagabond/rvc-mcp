@@ -3,10 +3,12 @@
 //!
 //! Security:
 //! - All environment-sourced URLs validated (http/https only)
-//! - File paths validated against traversal attacks
-//! - Argument length limits enforced before processing
-//! - No credentials/keys in log output
-//! - Process exit on config validation failure
+//! - File paths validated against traversal attacks (no `..` sequences)
+//! - Argument length limits enforced before processing (MAX_ARG_LEN = 4096)
+//! - File extension allow-lists for audio and model files
+//! - No credentials/keys in log output — errors sanitized via `sanitize_error`
+//! - Process exit on config validation failure (fail-closed)
+//! - Path length bounded (MAX_PATH_LEN = 1024) to prevent buffer abuse
 
 use serde::Deserialize;
 use serde_json::{Value, json};

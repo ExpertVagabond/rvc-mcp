@@ -1,7 +1,7 @@
 [package]
 name = "rvc-mcp"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 license = "MIT"
 authors = ["Purple Squirrel Media LLC"]
 
@@ -10,9 +10,13 @@ name = "rvc-mcp"
 path = "src/main.rs"
 
 [dependencies]
+psm-mcp-core = { path = "../psm-mcp-core/psm-mcp-core" }
+psm-mcp-transport = { path = "../psm-mcp-core/psm-mcp-transport" }
+psm-mcp-policy = { path = "../psm-mcp-core/psm-mcp-policy" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
